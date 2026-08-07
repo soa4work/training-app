@@ -2,9 +2,12 @@ name: Deploy PWA to GitHub Pages
 
 # Публикует приложение на GitHub Pages при пуше в main.
 # Можно запустить вручную: вкладка Actions → этот workflow → Run workflow.
+# Деплой возможен только с дефолтной ветки репозитория (ограничение окружения
+# github-pages). Пока дефолт — рабочая ветка; после переключения на main
+# сработает и она. Оба варианта учтены.
 on:
   push:
-    branches: [main]
+    branches: [main, claude/workout-logging-app-wuned0]
   workflow_dispatch:
 
 # Права, необходимые для публикации на Pages.
