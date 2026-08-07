@@ -29,6 +29,12 @@ jobs:
           node-version: 20
           cache: npm
 
+      # Автоматически включает GitHub Pages (source = GitHub Actions),
+      # если он ещё не включён — тогда ручная настройка не нужна.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
       - run: npm ci
 
       # Иконки уже закоммичены в public/icons, повторная генерация не нужна.
