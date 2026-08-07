@@ -1,0 +1,49 @@
+name: Deploy PWA to GitHub Pages
+
+# Публикует приложение на GitHub Pages при пуше в main.
+# Можно запустить вручную: вкладка Actions → этот workflow → Run workflow.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Права, необходимые для публикации на Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Одновременно только один деплой; лишние в очереди отменяются.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Иконки уже закоммичены в public/icons, повторная генерация не нужна.
+      - run: npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
