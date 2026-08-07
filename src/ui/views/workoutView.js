@@ -1,28 +1,33 @@
-import { el, topbar, numberInput } from '../components.js'
+import { el, topbar } from '../components.js'
 import { navigate } from '../router.js'
 import { t } from '../../i18n/ru.js'
-import {
-  getWorkout,
-  updateWorkout,
-  deleteWorkout,
-  addExercise,
-  updateExercise,
-  removeExercise,
-  addSet,
-  updateSet,
-  removeSet
-} from '../../core/storage.js'
+import { getWorkout, updateWorkout, deleteWorkout, listExerciseNames } from '../../core/storage.js'
+import { createExerciseObject, createSetObject } from '../../core/model.js'
 
+// Редактор с единым источником правды в памяти (объект `w`). Любая правка меняет
+// `w` мгновенно и целиком пишется в базу — это исключает гонку чтение-изменение-
+// запись (из-за которой вес терялся при добавлении подхода).
 export async function workoutView(root, params) {
-  let w = await getWorkout(params.id)
+  const w = await getWorkout(params.id)
   if (!w) {
     navigate('#/')
     return
   }
 
+  // Подсказки для автозаполнения названий упражнений (ранее введённые).
+  const knownNames = await listExerciseNames()
+
+  // Сохранить весь документ. Пишем целиком — согласованно и без потерь.
+  function save() {
+    return updateWorkout(w.id, { date: w.date, note: w.note, exercises: w.exercises })
+  }
+
   const back = el('button', {
     class: 'link',
-    onclick: () => navigate('#/')
+    onclick: async () => {
+      await save()
+      navigate('#/')
+    }
   }, '‹ ' + t.tabHistory)
 
   root.appendChild(topbar(t.editWorkout, { left: back }))
@@ -30,13 +35,18 @@ export async function workoutView(root, params) {
   const content = el('main', { class: 'content' })
   root.appendChild(content)
 
-  // Перечитать из хранилища и перерисовать редактор (после структурных изменений).
-  async function reload() {
-    w = await getWorkout(params.id)
-    renderEditor()
-  }
+  // Список подсказок названий упражнений.
+  const datalist = el(
+    'datalist',
+    { id: 'exercise-names' },
+    knownNames.map((n) => el('option', { value: n }))
+  )
+  root.appendChild(datalist)
 
-  function renderEditor() {
+  // Какое поле сфокусировать после перерисовки (id элемента через data-fid).
+  let pendingFocus = null
+
+  function render() {
     content.replaceChildren()
 
     // Дата
@@ -46,7 +56,10 @@ export async function workoutView(root, params) {
         el('input', {
           type: 'date',
           value: w.date,
-          onchange: (e) => updateWorkout(w.id, { date: e.target.value })
+          onchange: (e) => {
+            w.date = e.target.value
+            save()
+          }
         })
       ])
     )
@@ -59,7 +72,10 @@ export async function workoutView(root, params) {
           type: 'text',
           value: w.note || '',
           placeholder: t.notePlaceholder,
-          onchange: (e) => updateWorkout(w.id, { note: e.target.value })
+          oninput: (e) => {
+            w.note = e.target.value
+            save()
+          }
         })
       ])
     )
@@ -70,17 +86,18 @@ export async function workoutView(root, params) {
       content.appendChild(el('div', { class: 'muted', style: 'margin-bottom:14px' }, t.noExercises))
     }
 
-    for (const ex of w.exercises) {
-      content.appendChild(renderExercise(ex))
-    }
+    for (const ex of w.exercises) content.appendChild(renderExercise(ex))
 
     // Добавить упражнение
     content.appendChild(
       el('button', {
         class: 'btn secondary',
-        onclick: async () => {
-          await addExercise(w.id, '')
-          await reload()
+        onclick: () => {
+          const ex = createExerciseObject('')
+          w.exercises.push(ex)
+          pendingFocus = 'ex:' + ex.id
+          save()
+          render()
         }
       }, '＋ ' + t.addExercise)
     )
@@ -99,27 +116,36 @@ export async function workoutView(root, params) {
         }, '🗑 ' + t.deleteWorkout)
       ])
     )
+
+    applyFocus()
   }
 
   function renderExercise(ex) {
     const box = el('div', { class: 'exercise' })
 
-    // Заголовок: имя + удалить
+    // Заголовок: имя (с автоподсказками) + удалить
     box.appendChild(
       el('div', { class: 'exercise-head' }, [
         el('input', {
           type: 'text',
           value: ex.name,
           placeholder: t.exerciseNamePlaceholder,
-          onchange: (e) => updateExercise(w.id, ex.id, { name: e.target.value })
+          list: 'exercise-names',
+          autocapitalize: 'sentences',
+          'data-fid': 'ex:' + ex.id,
+          oninput: (e) => {
+            ex.name = e.target.value
+            save()
+          }
         }),
         el('button', {
           class: 'icon-btn',
           'aria-label': t.confirmDeleteExercise,
-          onclick: async () => {
+          onclick: () => {
             if (confirm(t.confirmDeleteExercise)) {
-              await removeExercise(w.id, ex.id)
-              await reload()
+              w.exercises = w.exercises.filter((e) => e.id !== ex.id)
+              save()
+              render()
             }
           }
         }, '✕')
@@ -143,36 +169,32 @@ export async function workoutView(root, params) {
       box.appendChild(
         el('div', { class: 'set-row' }, [
           el('span', { class: 'idx' }, String(i + 1)),
-          numberInput({
-            value: s.reps,
-            step: '1',
-            onchange: (e) => updateSet(w.id, ex.id, s.id, { reps: e.target.value })
-          }),
-          numberInput({
-            value: s.weight,
-            step: '0.5',
-            onchange: (e) => updateSet(w.id, ex.id, s.id, { weight: e.target.value })
-          }),
+          setInput(s, 'reps', '1'),
+          setInput(s, 'weight', '0.5'),
           el('button', {
             class: 'icon-btn',
             'aria-label': 'Удалить подход',
-            onclick: async () => {
-              await removeSet(w.id, ex.id, s.id)
-              await reload()
+            onclick: () => {
+              ex.sets = ex.sets.filter((x) => x.id !== s.id)
+              save()
+              render()
             }
           }, '✕')
         ])
       )
     })
 
-    // Добавить подход (копирует значения предыдущего для удобства)
+    // Добавить подход — копирует значения предыдущего (частый сценарий в зале).
     box.appendChild(
       el('button', {
         class: 'btn ghost',
-        onclick: async () => {
+        onclick: () => {
           const last = ex.sets[ex.sets.length - 1]
-          await addSet(w.id, ex.id, last ? { reps: last.reps, weight: last.weight } : {})
-          await reload()
+          const set = createSetObject(last ? last.reps : 0, last ? last.weight : 0)
+          ex.sets.push(set)
+          pendingFocus = 'set:' + set.id + ':reps'
+          save()
+          render()
         }
       }, '＋ ' + t.addSet)
     )
@@ -180,5 +202,37 @@ export async function workoutView(root, params) {
     return box
   }
 
-  renderEditor()
+  // Числовое поле подхода: пустое (плейсхолдер) вместо 0, парсинг при вводе.
+  function setInput(s, key, step) {
+    const num = s[key]
+    return el('input', {
+      type: 'number',
+      inputmode: 'decimal',
+      min: '0',
+      step,
+      value: num === 0 ? '' : String(num),
+      placeholder: '0',
+      'data-fid': 'set:' + s.id + ':' + key,
+      oninput: (e) => {
+        const v = e.target.value
+        s[key] = v === '' ? 0 : Number(v) || 0
+        save()
+      }
+    })
+  }
+
+  // Поставить фокус на только что добавленный элемент (и курсор в конец).
+  function applyFocus() {
+    if (!pendingFocus) return
+    const node = content.querySelector(`[data-fid="${pendingFocus}"]`)
+    pendingFocus = null
+    if (!node) return
+    node.focus()
+    const val = node.value
+    if (val) {
+      try { node.setSelectionRange(val.length, val.length) } catch {}
+    }
+  }
+
+  render()
 }
